@@ -31,7 +31,7 @@ from tqdm import tqdm
 
 from augment import mixup_or_cutmix, soft_target_cross_entropy
 from data import CLASSES, get_dataloaders
-from model import build_model, count_parameters
+from model import ARCHITECTURES, build_model, count_parameters
 from utils import (AverageMeter, CSVLogger, ModelEMA, accuracy, describe_device,
                    get_device, plot_history, save_json, set_seed)
 
@@ -53,10 +53,14 @@ RECIPE_PRESETS = {
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="在 CIFAR-10 上训练 ResNet")
     # 模型
-    p.add_argument("--model", default="resnet18",
-                   choices=["resnet20", "resnet18", "resnet34", "resnet50"],
-                   help="网络结构")
-    p.add_argument("--width", type=float, default=1.0, help="通道数缩放系数")
+    p.add_argument("--model", default="resnet18", choices=ARCHITECTURES,
+                   help="网络结构（resnet* 为 CIFAR 版 ResNet，wrn* 为 WideResNet）")
+    p.add_argument("--width", type=float, default=1.0,
+                   help="通道缩放系数：ResNet 缩放基础通道，WRN 缩放 widen factor")
+    p.add_argument("--dropout", type=float, default=0.0,
+                   help="WRN 两个卷积之间的 dropout（经典值 0.3），ResNet 忽略")
+    p.add_argument("--drop-path", type=float, default=0.0,
+                   help="Stochastic Depth 最大丢弃概率，各块线性递增（推荐 0.1）")
     # 训练
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch-size", type=int, default=128)
@@ -159,11 +163,10 @@ def train_one_epoch(model, loader, args, optimizer, scheduler, scaler, ema,
         targets = targets.to(device, non_blocking=True)
 
         if use_mix:
-            # 混合系数按 MixUp/CutMix 各自的比例随机选择
-            alpha = args.mixup if args.mixup > 0 else args.cutmix
-            switch = 1.0 if args.cutmix <= 0 else (0.0 if args.mixup <= 0 else 0.5)
+            # MixUp 与 CutMix 各用自己的 alpha；两者都开启时 50/50 随机选择
             images, y_a, y_b, lam = mixup_or_cutmix(
-                images, targets, alpha=alpha, prob=args.mix_prob, switch=switch)
+                images, targets, mixup_alpha=args.mixup, cutmix_alpha=args.cutmix,
+                prob=args.mix_prob, switch=0.5)
             if lam < 1.0:
                 mixed_count += 1
         else:
@@ -243,7 +246,8 @@ def main() -> None:
     print(f"训练集 {len(train_loader.dataset)} 张 / 测试集 {len(test_loader.dataset)} 张")
 
     # ---- 模型 ----
-    model = build_model(args.model, num_classes=len(CLASSES), width=args.width).to(device)
+    model = build_model(args.model, num_classes=len(CLASSES), width=args.width,
+                        drop_path=args.drop_path, dropout=args.dropout).to(device)
     n_params = count_parameters(model)
 
     criterion = nn.CrossEntropyLoss(label_smoothing=args.label_smoothing)
@@ -266,7 +270,9 @@ def main() -> None:
             aug_parts.append(f"MixUp/CutMix(p={args.mix_prob}, alpha={args.mixup or args.cutmix})")
     aug_desc = " + ".join(aug_parts)
 
-    print(f"模型: {args.model} (width={args.width})   参数量: {n_params:,}")
+    print(f"模型: {args.model} (width={args.width})   参数量: {n_params:,}"
+          + (f"   dropout={args.dropout}" if args.dropout > 0 else "")
+          + (f"   drop-path={args.drop_path}" if args.drop_path > 0 else ""))
     print(f"优化器: SGD(lr={args.lr}, momentum={args.momentum}, wd={args.weight_decay}, "
           f"nesterov)   调度: warmup {args.warmup_epochs}ep + cosine")
     print(f"增强: {aug_desc}")
@@ -279,7 +285,7 @@ def main() -> None:
     logger = CSVLogger(out_dir / f"history{suffix}.csv",
                        ["epoch", "lr", "train_loss", "train_acc", "test_loss",
                         "test_acc", "raw_acc", "mixed_ratio", "epoch_time", "best_acc"])
-    best_acc, best_epoch = 0.0, 0
+    best_acc, best_epoch, best_source = 0.0, 0, "-"
     ckpt_path = ckpt_dir / f"best{suffix}.pt"
     total_start = time.time()
 
@@ -290,10 +296,23 @@ def main() -> None:
             device, epoch, use_amp)
 
         eval_model = ema.module if ema is not None else model
-        test_loss, test_acc = evaluate(eval_model, test_loader, criterion, device, use_amp)
-        raw_acc = test_acc
-        if ema is not None:
-            _, raw_acc = evaluate(model, test_loader, criterion, device, use_amp)
+        ema_loss, ema_acc = evaluate(eval_model, test_loader, criterion, device, use_amp)
+        if ema is None:
+            raw_loss, raw_acc = ema_loss, ema_acc
+        else:
+            raw_loss, raw_acc = evaluate(model, test_loader, criterion, device, use_amp)
+
+        # 在原始权重与 EMA 之间取更好的那个来记录并保存。
+        # 不预设 EMA 一定更优：训练中期 EMA 领先很多，但末期两者会打平甚至反超，
+        # 只存 EMA 会丢掉更好的那份权重。
+        if raw_acc > ema_acc:
+            cur_acc, cur_loss, cur_src, cur_state = raw_acc, raw_loss, "raw", model.state_dict()
+        elif ema is not None:
+            cur_acc, cur_loss, cur_src, cur_state = ema_acc, ema_loss, "ema", eval_model.state_dict()
+        else:
+            cur_acc, cur_loss, cur_src, cur_state = raw_acc, raw_loss, "raw", model.state_dict()
+
+        test_loss, test_acc = ema_loss, ema_acc
 
         dt = time.time() - t0
         lr_now = scheduler.get_last_lr()[0]
@@ -302,15 +321,18 @@ def main() -> None:
                          ("raw_acc", raw_acc), ("lr", lr_now)):
             history[key].append(val)
 
-        improved = test_acc > best_acc
+        improved = cur_acc > best_acc
         if improved:
-            best_acc, best_epoch = test_acc, epoch
+            best_acc, best_epoch, best_source = cur_acc, epoch, cur_src
             torch.save({
                 "model": args.model,
                 "width": args.width,
-                "state_dict": eval_model.state_dict(),
+                "drop_path": args.drop_path,
+                "dropout": args.dropout,
+                "state_dict": cur_state,
                 "epoch": epoch,
                 "best_acc": best_acc,
+                "best_acc_source": cur_src,
                 "recipe": args.recipe,
                 "ema": ema is not None,
                 "args": vars(args),
@@ -325,17 +347,19 @@ def main() -> None:
         })
 
         flag = "  *" if improved else ""
-        ema_note = f" (raw {raw_acc:5.2f}%)" if ema is not None else ""
+        src_note = (f" (EMA {ema_acc:5.2f}% / raw {raw_acc:5.2f}%, 取 {cur_src})"
+                    if ema is not None else "")
         print(f"Epoch {epoch:3d}/{args.epochs} | lr {lr_now:.4f} | "
               f"train loss {train_loss:.4f} acc {train_acc:5.2f}% | "
-              f"test loss {test_loss:.4f} acc {test_acc:5.2f}%{ema_note} | "
-              f"{dt:5.1f}s | best {best_acc:5.2f}%{flag}")
+              f"test loss {test_loss:.4f} acc {test_acc:5.2f}%{src_note} | "
+              f"{dt:5.1f}s | best {best_acc:5.2f}% ({best_source}){flag}")
 
     total_time = time.time() - total_start
     print("-" * 96)
     print(f"训练完成，用时 {total_time / 60:.1f} 分钟 "
           f"({total_time / max(1, args.epochs):.1f}s/epoch)")
-    print(f"最佳测试准确率: {best_acc:.2f}% (epoch {best_epoch})  ->  {ckpt_path}")
+    print(f"最佳测试准确率: {best_acc:.2f}% (epoch {best_epoch}, 来自 {best_source})"
+          f"  ->  {ckpt_path}")
 
     plot_history(history, out_dir / f"curves{suffix}.png",
                  title=f"{args.model} on CIFAR-10 ({args.recipe})")
@@ -343,6 +367,8 @@ def main() -> None:
         "model": args.model,
         "width": args.width,
         "params": n_params,
+        "drop_path": args.drop_path,
+        "dropout": args.dropout,
         "recipe": args.recipe,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
@@ -361,6 +387,7 @@ def main() -> None:
         "device": describe_device(device),
         "best_acc": round(best_acc, 4),
         "best_epoch": best_epoch,
+        "best_acc_source": best_source,
         "final_acc": round(history["test_acc"][-1], 4),
         "total_minutes": round(total_time / 60, 2),
         "history": history,

@@ -46,7 +46,11 @@ def parse_args() -> argparse.Namespace:
 
 @torch.no_grad()
 def collect_probs(model, loader, device, use_amp, tta: bool = False):
-    """收集整个测试集的预测概率与标签。"""
+    """收集整个测试集的预测概率与标签。
+
+    返回的概率每行和为 1。TTA 时取原图与水平翻转图预测概率的**平均**，
+    而不是相加——相加会让概率和为 2，导致置信度显示出现超过 100% 的值。
+    """
     model.eval()
     all_probs, all_labels = [], []
 
@@ -58,11 +62,17 @@ def collect_probs(model, loader, device, use_amp, tta: bool = False):
             probs = torch.softmax(logits.float(), dim=1)
             if tta:
                 logits_f = model(torch.flip(images, dims=[3]))
-                probs = probs + torch.softmax(logits_f.float(), dim=1)
+                probs = 0.5 * (probs + torch.softmax(logits_f.float(), dim=1))
         all_probs.append(probs.cpu())
         all_labels.append(targets)
 
-    return torch.cat(all_probs), torch.cat(all_labels)
+    probs = torch.cat(all_probs)
+    # 自检：概率必须归一化，否则下游的置信度展示和集成权重都会出错
+    row_sums = probs.sum(dim=1)
+    if not torch.allclose(row_sums, torch.ones_like(row_sums), atol=1e-4):
+        raise RuntimeError(
+            f"预测概率未归一化（行和范围 {row_sums.min():.4f}~{row_sums.max():.4f}）")
+    return probs, torch.cat(all_labels)
 
 
 def per_class_report(cm: np.ndarray, classes) -> list[dict]:
@@ -102,7 +112,10 @@ def main() -> None:
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     arch = ckpt.get("model", "resnet18")
     width = ckpt.get("width", 1.0)
-    model = build_model(arch, num_classes=len(CLASSES), width=width).to(device)
+    # dropout / drop-path 在评估模式下都是空操作，但为了忠实还原结构仍然带上
+    model = build_model(arch, num_classes=len(CLASSES), width=width,
+                        drop_path=ckpt.get("drop_path", 0.0),
+                        dropout=ckpt.get("dropout", 0.0)).to(device)
     model.load_state_dict(ckpt["state_dict"])
 
     print(f"设备: {describe_device(device)}")
@@ -178,7 +191,17 @@ def main() -> None:
         "per_class": report,
         "confusion_matrix": cm.tolist(),
     }, out_dir / f"eval{tag}.json")
-    print(f"结果已写入 {out_dir}/eval{tag}.json、confusion_matrix{tag}.png、predictions{tag}.png")
+
+    # 逐样本预测：混淆矩阵只能看聚合结果，做配对显著性检验（McNemar / 配对 bootstrap）
+    # 和误差互补性分析都需要知道“哪一张图被谁判对了”。
+    np.savez_compressed(
+        out_dir / f"preds{tag}.npz",
+        labels=labels.numpy().astype(np.int16),
+        preds=preds.numpy().astype(np.int16),
+        probs=probs.numpy().astype(np.float32),
+    )
+    print(f"结果已写入 {out_dir}/eval{tag}.json、confusion_matrix{tag}.png、"
+          f"predictions{tag}.png、preds{tag}.npz")
 
 
 if __name__ == "__main__":

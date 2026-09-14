@@ -126,6 +126,97 @@ def save_json(obj, path: str | Path) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
+# ------------------------------------------------------------ 配对显著性检验
+
+def load_correctness(npz_path: str | Path) -> np.ndarray:
+    """从 evaluate.py 导出的 ``preds*.npz`` 读取逐样本判对与否。"""
+    data = np.load(npz_path)
+    return (data["preds"] == data["labels"]).astype(np.int8)
+
+
+def mcnemar_test(correct_a: np.ndarray, correct_b: np.ndarray) -> Dict[str, float]:
+    """McNemar 检验：比较两个模型在**同一测试集**上的表现是否有显著差异。
+
+    这里不能用单模型的二项置信区间来判断两个模型谁更好。两个模型面对的是同一批
+    图片，它们的错误是**配对**的（同一张难图往往两个都错），差值的不确定性远小于
+    把两次评估当成独立样本时的估计。McNemar 只看"不一致"的那部分：
+
+        b = A 错 B 对     c = A 对 B 错
+
+    在"两个模型等价"的原假设下，b 服从 Binomial(b+c, 0.5)。
+
+    Args:
+        correct_a: 模型 A 的逐样本判对情况（bool/int 数组）。
+        correct_b: 模型 B 的逐样本判对情况，顺序必须与 A 完全一致。
+
+    Returns:
+        ``{"n_a_only", "n_b_only", "n_discordant", "acc_a", "acc_b",
+           "acc_diff", "p_value", "method"}``；``acc_diff = acc_b - acc_a``（百分点）。
+    """
+    a = np.asarray(correct_a).astype(bool)
+    b_arr = np.asarray(correct_b).astype(bool)
+    if a.shape != b_arr.shape:
+        raise ValueError(f"两个模型的预测数量不一致: {a.shape} vs {b_arr.shape}")
+
+    n_a_only = int(np.sum(a & ~b_arr))   # A 对 B 错
+    n_b_only = int(np.sum(~a & b_arr))   # A 错 B 对
+    n = n_a_only + n_b_only
+
+    if n == 0:
+        p_value, method = 1.0, "identical"
+    elif n < 25:
+        # 精确二项检验（双侧）
+        from math import comb
+        tail = sum(comb(n, k) for k in range(min(n_a_only, n_b_only) + 1))
+        p_value = min(1.0, 2.0 * tail * 0.5 ** n)
+        method = "exact_binomial"
+    else:
+        # 连续性校正的卡方检验；自由度 1 时 P(X > x) = erfc(sqrt(x/2))
+        from math import erfc, sqrt
+        chi2 = (abs(n_a_only - n_b_only) - 1) ** 2 / n
+        chi2 = max(chi2, 0.0)
+        p_value = erfc(sqrt(chi2 / 2.0))
+        method = "chi2_continuity_corrected"
+
+    acc_a = float(a.mean() * 100)
+    acc_b = float(b_arr.mean() * 100)
+    return {
+        "n_a_only": n_a_only,
+        "n_b_only": n_b_only,
+        "n_discordant": n,
+        "acc_a": acc_a,
+        "acc_b": acc_b,
+        "acc_diff": acc_b - acc_a,
+        "p_value": float(p_value),
+        "method": method,
+    }
+
+
+def paired_bootstrap_ci(correct_a: np.ndarray, correct_b: np.ndarray,
+                        n_boot: int = 10000, alpha: float = 0.05,
+                        seed: int = 0) -> tuple[float, float, float]:
+    """配对 bootstrap：给准确率差值一个置信区间。
+
+    与 McNemar 互补——McNemar 回答"是否有差异"，这里回答"差异大概多大"。
+    对样本（而非对模型）重采样，因此保留了配对结构。
+
+    Returns:
+        ``(diff, lo, hi)``，单位为百分点，``diff = acc_b - acc_a``。
+    """
+    a = np.asarray(correct_a).astype(np.float32)
+    b_arr = np.asarray(correct_b).astype(np.float32)
+    if a.shape != b_arr.shape:
+        raise ValueError(f"两个模型的预测数量不一致: {a.shape} vs {b_arr.shape}")
+
+    diff = b_arr - a                                  # 每个样本的 (B对-A对)，取值 -1/0/+1
+    rng = np.random.default_rng(seed)
+    n = len(diff)
+    idx = rng.integers(0, n, size=(n_boot, n))
+    boot = diff[idx].mean(axis=1) * 100
+    lo, hi = np.percentile(boot, [100 * alpha / 2, 100 * (1 - alpha / 2)])
+    return float(diff.mean() * 100), float(lo), float(hi)
+
+
 class CSVLogger:
     """把每个 epoch 的指标追加写入 CSV。"""
 

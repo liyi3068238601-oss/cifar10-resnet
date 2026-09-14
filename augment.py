@@ -58,22 +58,36 @@ def cutmix(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0):
     return x_mixed, y, y[index], lam
 
 
-def mixup_or_cutmix(x: torch.Tensor, y: torch.Tensor, alpha: float = 1.0,
-                    prob: float = 0.5, switch: float = 0.5):
+def mixup_or_cutmix(x: torch.Tensor, y: torch.Tensor, mixup_alpha: float = 1.0,
+                    cutmix_alpha: float = 1.0, prob: float = 0.5,
+                    switch: float = 0.5):
     """以 ``prob`` 的概率随机选择 MixUp 或 CutMix，否则原样返回。
 
+    **两种方法各自使用自己的 alpha**。早期版本只接受单个 alpha 并把 MixUp 的
+    alpha 也套用到 CutMix 上，导致 ``mixup=0.2, cutmix=1.0`` 时 CutMix 实际用的是
+    0.2；这里改为分别传入。``alpha <= 0`` 表示该方法被禁用，两者都禁用时直接返回原样。
+
     Args:
-        alpha: Beta 分布参数。
+        mixup_alpha: MixUp 的 Beta 分布参数，<=0 表示禁用 MixUp。
+        cutmix_alpha: CutMix 的 Beta 分布参数，<=0 表示禁用 CutMix。
         prob: 启用混合的概率。
-        switch: 启用时选择 MixUp 的概率（其余情况选 CutMix）。
+        switch: 两者都可用时选择 MixUp 的概率（其余情况选 CutMix）。
 
     Returns:
         ``(x, y_a, y_b, lam)``；未启用混合时 ``y_a`` 与 ``y_b`` 相同且 ``lam=1``。
     """
-    if random.random() > prob:
+    use_mixup, use_cutmix = mixup_alpha > 0, cutmix_alpha > 0
+    if not (use_mixup or use_cutmix) or random.random() > prob:
         return x, y, y, 1.0
-    fn = mixup if random.random() < switch else cutmix
-    return fn(x, y, alpha)
+
+    if use_mixup and use_cutmix:
+        pick_mixup = random.random() < switch
+    else:
+        pick_mixup = use_mixup
+
+    if pick_mixup:
+        return mixup(x, y, mixup_alpha)
+    return cutmix(x, y, cutmix_alpha)
 
 
 def soft_target_cross_entropy(logits: torch.Tensor, y_a: torch.Tensor,
