@@ -240,7 +240,8 @@ def plot_predictions(images: torch.Tensor, labels: Sequence[int],
 
     n = len(images)
     rows = int(np.ceil(n / cols))
-    fig, axes = plt.subplots(rows, cols, figsize=(cols * 1.3, rows * 1.65))
+    # 标题用单行并留足行距，否则下一行的标题会压到上一行的图片上
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 1.4, rows * 1.95))
     axes = np.atleast_1d(axes).ravel()
 
     for ax in axes:
@@ -252,12 +253,13 @@ def plot_predictions(images: torch.Tensor, labels: Sequence[int],
         ax.imshow(img)
         ok = int(labels[i]) == int(preds[i])
         color = "#1a7f37" if ok else "#c1121f"
-        ax.set_title(f"{classes[int(preds[i])]}\n{probs[i] * 100:.0f}%",
-                     color=color, fontsize=8)
+        ax.set_title(f"{classes[int(preds[i])]} {probs[i] * 100:.0f}%",
+                     color=color, fontsize=9, pad=5)
         ax.axis("off")
 
     fig.suptitle("Test set predictions (green = correct, red = wrong)", fontsize=12)
-    fig.tight_layout()
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.86, bottom=0.01,
+                        hspace=0.42, wspace=0.06)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)

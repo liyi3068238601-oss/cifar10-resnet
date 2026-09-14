@@ -1,0 +1,233 @@
+{
+  "checkpoint": "checkpoints\\best_baseline200.pt",
+  "model": "resnet18",
+  "params": 11173962,
+  "tta": false,
+  "top1": 95.49,
+  "top5": 99.61,
+  "test_loss": 0.2377,
+  "per_class": [
+    {
+      "class": "airplane",
+      "name_zh": "飞机",
+      "correct": 955,
+      "support": 1000,
+      "precision": 0.9666,
+      "recall": 0.955,
+      "f1": 0.9608,
+      "acc": 0.955
+    },
+    {
+      "class": "automobile",
+      "name_zh": "汽车",
+      "correct": 984,
+      "support": 1000,
+      "precision": 0.9733,
+      "recall": 0.984,
+      "f1": 0.9786,
+      "acc": 0.984
+    },
+    {
+      "class": "bird",
+      "name_zh": "鸟",
+      "correct": 936,
+      "support": 1000,
+      "precision": 0.9464,
+      "recall": 0.936,
+      "f1": 0.9412,
+      "acc": 0.936
+    },
+    {
+      "class": "cat",
+      "name_zh": "猫",
+      "correct": 908,
+      "support": 1000,
+      "precision": 0.8955,
+      "recall": 0.908,
+      "f1": 0.9017,
+      "acc": 0.908
+    },
+    {
+      "class": "deer",
+      "name_zh": "鹿",
+      "correct": 962,
+      "support": 1000,
+      "precision": 0.961,
+      "recall": 0.962,
+      "f1": 0.9615,
+      "acc": 0.962
+    },
+    {
+      "class": "dog",
+      "name_zh": "狗",
+      "correct": 929,
+      "support": 1000,
+      "precision": 0.9046,
+      "recall": 0.929,
+      "f1": 0.9166,
+      "acc": 0.929
+    },
+    {
+      "class": "frog",
+      "name_zh": "青蛙",
+      "correct": 966,
+      "support": 1000,
+      "precision": 0.9817,
+      "recall": 0.966,
+      "f1": 0.9738,
+      "acc": 0.966
+    },
+    {
+      "class": "horse",
+      "name_zh": "马",
+      "correct": 969,
+      "support": 1000,
+      "precision": 0.9808,
+      "recall": 0.969,
+      "f1": 0.9748,
+      "acc": 0.969
+    },
+    {
+      "class": "ship",
+      "name_zh": "船",
+      "correct": 977,
+      "support": 1000,
+      "precision": 0.9664,
+      "recall": 0.977,
+      "f1": 0.9717,
+      "acc": 0.977
+    },
+    {
+      "class": "truck",
+      "name_zh": "卡车",
+      "correct": 963,
+      "support": 1000,
+      "precision": 0.9757,
+      "recall": 0.963,
+      "f1": 0.9693,
+      "acc": 0.963
+    }
+  ],
+  "confusion_matrix": [
+    [
+      955,
+      5,
+      9,
+      6,
+      3,
+      2,
+      0,
+      0,
+      16,
+      4
+    ],
+    [
+      0,
+      984,
+      1,
+      0,
+      0,
+      0,
+      0,
+      0,
+      2,
+      13
+    ],
+    [
+      8,
+      0,
+      936,
+      16,
+      13,
+      14,
+      6,
+      5,
+      2,
+      0
+    ],
+    [
+      3,
+      1,
+      9,
+      908,
+      7,
+      57,
+      8,
+      3,
+      3,
+      1
+    ],
+    [
+      2,
+      0,
+      8,
+      12,
+      962,
+      8,
+      2,
+      6,
+      0,
+      0
+    ],
+    [
+      2,
+      0,
+      11,
+      43,
+      9,
+      929,
+      1,
+      4,
+      0,
+      1
+    ],
+    [
+      2,
+      0,
+      8,
+      18,
+      2,
+      4,
+      966,
+      0,
+      0,
+      0
+    ],
+    [
+      3,
+      0,
+      4,
+      6,
+      4,
+      12,
+      1,
+      969,
+      1,
+      0
+    ],
+    [
+      9,
+      4,
+      1,
+      2,
+      1,
+      1,
+      0,
+      0,
+      977,
+      5
+    ],
+    [
+      4,
+      17,
+      2,
+      3,
+      0,
+      0,
+      0,
+      1,
+      10,
+      963
+    ]
+  ]
+}

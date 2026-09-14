@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--tta", action="store_true",
                    help="测试时增强：原图与水平翻转的预测概率取平均")
     p.add_argument("--n-samples", type=int, default=16, help="预测示例图的数量")
+    p.add_argument("--tag", default="", help="输出文件名后缀，便于对比多个模型")
     return p.parse_args()
 
 
@@ -147,7 +148,8 @@ def main() -> None:
     # ---- 图表 ----
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    tag = "_tta" if args.tta else ""
+    # 例如 --tag strong --tta -> "_strong_tta"，避免不同模型的结果互相覆盖
+    tag = (f"_{args.tag}" if args.tag else "") + ("_tta" if args.tta else "")
     plot_confusion_matrix(cm, CLASSES, out_dir / f"confusion_matrix{tag}.png",
                           normalize=True,
                           title=f"CIFAR-10 confusion matrix (top-1 {top1:.2f}%)")
