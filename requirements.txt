@@ -1,0 +1,21 @@
+# CIFAR-10 训练依赖
+#
+# 注意：PyTorch 的 CUDA 版本不在 PyPI 上，需要从官方源或国内镜像单独安装。
+# 强烈建议先按下面的命令装好 torch/torchvision，再安装本文件剩余依赖。
+#
+#   # CUDA 12.8（支持 RTX 40/50 系，含 Blackwell sm_120）
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
+#
+# 本仓库验证过的组合：
+#   torch 2.9.1+cu128  /  torchvision 0.24.1+cu128  /  Python 3.12  /  Windows
+
+torch>=2.9
+torchvision>=0.24
+
+numpy>=1.26
+pillow>=10.0
+tqdm>=4.66
+matplotlib>=3.8
+
+# 可选：仅在使用 HuggingFace parquet 作为数据来源时需要（prepare_data.py --source hf）
+pyarrow>=15.0

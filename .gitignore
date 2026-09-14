@@ -1,0 +1,42 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+
+# ---- 虚拟环境 ----
+.venv/
+venv/
+env/
+
+# ---- 数据（体积大，用 prepare_data.py 重新生成）----
+data/
+wheels/
+*.tar.gz
+*.tgz
+
+# ---- 权重 ----
+# checkpoints/best.pt 会被提交（约 45MB），便于直接复现评估结果；
+# 其余中间权重、优化器状态、断点文件不入库。
+checkpoints/*
+!checkpoints/best.pt
+*.pth
+*.optim
+
+# 训练中间产物
+install_torch.log
+*.log
+
+# ---- 编辑器 / 系统 ----
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# ---- 本地临时脚本（下载 / 自检用，不属于项目内容）----
+_*.py
+_*.sh
+
+# ---- 说明 ----
+# results/ 目录会被保留并提交：里面是 README 引用的曲线图、混淆矩阵与指标 JSON
+# （results 中若出现体积较大的临时文件，可在此追加规则）
