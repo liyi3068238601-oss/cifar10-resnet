@@ -126,6 +126,92 @@ def save_json(obj, path: str | Path) -> None:
         json.dump(obj, f, ensure_ascii=False, indent=2)
 
 
+def load_model_from_checkpoint(ckpt_path: str | Path, device,
+                               num_classes: int = 10):
+    """按 checkpoint 里记录的元信息重建模型并载入权重。
+
+    Returns:
+        ``(model, ckpt)``，model 已 ``to(device)`` 且处于 eval 模式。
+    """
+    import torch
+
+    from model import build_model
+
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    model = build_model(ckpt.get("model", "resnet18"),
+                        num_classes=num_classes,
+                        width=ckpt.get("width", 1.0),
+                        drop_path=ckpt.get("drop_path", 0.0),
+                        dropout=ckpt.get("dropout", 0.0)).to(device)
+    missing, unexpected = model.load_state_dict(ckpt["state_dict"], strict=False)
+    if missing or unexpected:
+        raise RuntimeError(f"权重与结构不匹配: 缺失 {missing[:3]} / 多余 {unexpected[:3]}")
+    model.eval()
+    return model, ckpt
+
+
+@torch.no_grad()
+def recalibrate_bn(model, loader, device, max_batches: int = 0,
+                   verbose: bool = True) -> int:
+    """只用**训练图像**重新估计 BatchNorm 的 running statistics。
+
+    为什么需要：平均权重（EMA/SWA）与 BN 统计量可能不匹配。EMA 的 running stats
+    是对训练过程中各步统计量的滑动平均，而那些统计量是在**增强后**的图上算出来的
+    ——强增强、尤其是 MixUp/CutMix 的混合图会明显改变激活的均值与方差，与推理时
+    看到的干净图像分布不一致。重新估计一次成本很低（只前向），值得用实验判断。
+
+    实现要点（顺序很重要）：
+
+    1. 先整体 ``eval()``，确保 Dropout / DropPath **关闭**。否则这一步会变成一次
+       新的随机前向，而不是统计量校准。
+    2. 再把 BN 单独切回 ``train()``，用累计平均（``momentum=None``）从零重新累计，
+       避免旧统计量残留。
+    3. 只喂训练图像，不得使用测试图像。
+
+    Args:
+        max_batches: 只用前若干个 batch（0 表示用完整 loader）。
+        verbose: 是否打印进度。
+
+    Returns:
+        实际参与累计的 batch 数。
+    """
+    import torch.nn as nn
+
+    was_training = model.training
+    model.eval()
+
+    bns = [m for m in model.modules()
+           if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    if not bns:
+        if verbose:
+            print("[bn] 模型不含 BatchNorm，跳过")
+        return 0
+
+    saved_momentum = [bn.momentum for bn in bns]
+    for bn in bns:
+        bn.reset_running_stats()
+        bn.momentum = None          # 累计移动平均，而不是指数滑动平均
+        bn.train()                  # 只让 BN 更新统计
+
+    n = 0
+    for images, _ in loader:
+        if max_batches and n >= max_batches:
+            break
+        model(images.to(device, non_blocking=True))
+        n += 1
+        if verbose and n % 50 == 0:
+            print(f"[bn]   已累计 {n} 个 batch", flush=True)
+
+    for bn, mom in zip(bns, saved_momentum):
+        bn.momentum = mom
+    model.train(was_training)
+
+    if verbose:
+        seen = n * (loader.batch_size or 0)
+        print(f"[bn] 重新估计完成：{n} 个 batch，约 {seen} 张训练图")
+    return n
+
+
 # ------------------------------------------------------------ 配对显著性检验
 
 def load_correctness(npz_path: str | Path) -> np.ndarray:

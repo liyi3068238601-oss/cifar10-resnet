@@ -25,15 +25,21 @@ RECIPE_LABEL = {"baseline": "baseline", "strong": "strong"}
 
 
 def load_runs(results_dir: str | Path) -> list[tuple[str, dict]]:
-    """读取所有 metrics_*.json，按 (配方, 轮数) 排序返回。"""
+    """读取所有 metrics_*.json，按 (架构, 配方, 轮数) 排序返回。"""
     runs = []
     for path in sorted(Path(results_dir).glob("metrics_*.json")):
         with path.open(encoding="utf-8") as f:
             metrics = json.load(f)
         tag = path.stem.replace("metrics_", "")
         runs.append((tag, metrics))
-    runs.sort(key=lambda r: (r[1].get("recipe", ""), r[1].get("epochs", 0)))
+    runs.sort(key=lambda r: (r[1].get("model", ""), r[1].get("recipe", ""),
+                             r[1].get("epochs", 0)))
     return runs
+
+
+def run_label(metrics: dict) -> str:
+    """图例标签：必须带架构名，否则 ResNet-18 与 WRN 的 strong 200ep 会重名。"""
+    return f"{metrics.get('model', '?')} {metrics.get('recipe', '')} {metrics.get('epochs', '?')}ep"
 
 
 def main() -> None:
@@ -57,18 +63,21 @@ def main() -> None:
         acc = m["history"]["test_acc"]
         epochs = np.arange(1, len(acc) + 1)
         recipe = m.get("recipe", "")
-        style = "-" if recipe == "baseline" else "--"
+        # 颜色区分配方，线型区分架构——5 个实验里 ResNet-18 与 WRN 各有 strong 200ep，
+        # 只用颜色无法区分
+        style = "--" if "wrn" in str(m.get("model", "")).lower() else "-"
         axes[0].plot(epochs, acc, style, linewidth=1.9,
                      color=RECIPE_COLOR.get(recipe),
-                     label=f"{recipe} {m['epochs']}ep (best {m['best_acc']:.2f}%)")
+                     label=f"{run_label(m)} (best {m['best_acc']:.2f}%)")
     axes[0].set_xlabel("epoch")
     axes[0].set_ylabel("test accuracy (%)")
     axes[0].set_title("Test accuracy")
-    axes[0].legend(fontsize=9, loc="lower right")
+    axes[0].legend(fontsize=8, loc="lower right")
     axes[0].grid(alpha=0.3)
 
     # 右：最佳准确率柱状对比
-    labels = [f"{m.get('recipe', '')}\n{m['epochs']}ep" for _, m in runs]
+    labels = [f"{m.get('model', '?')}\n{m.get('recipe', '')} {m.get('epochs', '?')}ep"
+              for _, m in runs]
     values = [m["best_acc"] for _, m in runs]
     colors = [RECIPE_COLOR.get(m.get("recipe", ""), "#888888") for _, m in runs]
     bars = axes[1].bar(range(len(runs)), values, color=colors, width=0.62)

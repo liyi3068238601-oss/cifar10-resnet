@@ -186,6 +186,50 @@ def test_droppath_adds_no_parameters():
            count_parameters(build_model("resnet18", drop_path=0.1))
 
 
+# ------------------------------------------------------------ BN 重估
+
+def test_recalibrate_bn_updates_stats_only():
+    """BN 重估只改 running stats、不动权重；且过程必须确定（说明 Dropout/DropPath 已关闭）。"""
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from utils import recalibrate_bn
+
+    torch.manual_seed(0)
+    # 刻意把 drop-path 开到 0.5：如果校准期间它没被关掉，两次结果就不会一致
+    model = build_model("resnet20", drop_path=0.5).train()
+    for m in model.modules():
+        if isinstance(m, torch.nn.BatchNorm2d):
+            m.running_mean.fill_(0.5)      # 人为设一个明显不对的统计量
+            m.running_var.fill_(2.0)
+
+    def split(sd):
+        w = {k: v.clone() for k, v in sd.items()
+             if "running" not in k and "num_batches_tracked" not in k}
+        s = {k: v.clone() for k, v in sd.items() if "running" in k}
+        return w, s
+
+    w_before, s_before = split(model.state_dict())
+
+    ds = TensorDataset(torch.randn(64, 3, 32, 32), torch.zeros(64, dtype=torch.long))
+    loader = DataLoader(ds, batch_size=16)
+
+    n = recalibrate_bn(model, loader, "cpu", verbose=False)
+    assert n == 4, f"应累计 4 个 batch，实际 {n}"
+    w_after, s_after = split(model.state_dict())
+
+    for k in w_before:
+        assert torch.equal(w_before[k], w_after[k]), f"可学习权重被改动了: {k}"
+    assert any(not torch.allclose(s_before[k], s_after[k]) for k in s_before), \
+        "running stats 没有被重新估计"
+
+    # 再跑一次：结果必须逐位相同，否则说明校准过程里混入了随机性
+    recalibrate_bn(model, loader, "cpu", verbose=False)
+    _, s_again = split(model.state_dict())
+    for k in s_after:
+        assert torch.allclose(s_after[k], s_again[k]), \
+            f"两次重估结果不一致，说明 Dropout/DropPath 没被关闭: {k}"
+
+
 # ------------------------------------------------------------ 配对显著性检验
 
 def test_mcnemar_symmetric_case_is_not_significant():

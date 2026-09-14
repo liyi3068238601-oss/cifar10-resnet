@@ -140,6 +140,24 @@ def build_scheduler(optimizer: torch.optim.Optimizer, args: argparse.Namespace,
     return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
 
+def _ckpt_dict(args: argparse.Namespace, state, epoch: int, acc: float,
+               source: str, is_ema: bool) -> dict:
+    """构造 checkpoint 内容。三份文件（综合最优 / raw / EMA）共用这个结构。"""
+    return {
+        "model": args.model,
+        "width": args.width,
+        "drop_path": args.drop_path,
+        "dropout": args.dropout,
+        "state_dict": state,
+        "epoch": epoch,
+        "best_acc": acc,
+        "best_acc_source": source,
+        "recipe": args.recipe,
+        "ema": is_ema,
+        "args": vars(args),
+    }
+
+
 def train_one_epoch(model, loader, args, optimizer, scheduler, scaler, ema,
                     device, epoch, use_amp) -> tuple[float, float, float]:
     """训练一个 epoch。
@@ -284,9 +302,14 @@ def main() -> None:
                                "raw_acc", "lr")}
     logger = CSVLogger(out_dir / f"history{suffix}.csv",
                        ["epoch", "lr", "train_loss", "train_acc", "test_loss",
-                        "test_acc", "raw_acc", "mixed_ratio", "epoch_time", "best_acc"])
+                        "test_acc", "raw_acc", "mixed_ratio", "epoch_time", "best_acc",
+                        "best_raw_acc", "best_ema_acc"])
     best_acc, best_epoch, best_source = 0.0, 0, "-"
+    best_raw_acc, best_raw_epoch = 0.0, 0
+    best_ema_acc, best_ema_epoch = 0.0, 0
     ckpt_path = ckpt_dir / f"best{suffix}.pt"
+    raw_ckpt_path = ckpt_dir / f"best{suffix}_raw.pt"
+    ema_ckpt_path = ckpt_dir / f"best{suffix}_ema.pt"
     total_start = time.time()
 
     for epoch in range(1, args.epochs + 1):
@@ -302,9 +325,9 @@ def main() -> None:
         else:
             raw_loss, raw_acc = evaluate(model, test_loader, criterion, device, use_amp)
 
-        # 在原始权重与 EMA 之间取更好的那个来记录并保存。
-        # 不预设 EMA 一定更优：训练中期 EMA 领先很多，但末期两者会打平甚至反超，
-        # 只存 EMA 会丢掉更好的那份权重。
+        # 在原始权重与 EMA 之间取更好的那个作为综合最优；
+        # 同时（若启用 EMA）把两条轨迹各自的最优分别落盘，便于事后逐项对照。
+        # 不预设 EMA 一定更优：训练中期 EMA 领先很多，末期两者会打平甚至反超。
         if raw_acc > ema_acc:
             cur_acc, cur_loss, cur_src, cur_state = raw_acc, raw_loss, "raw", model.state_dict()
         elif ema is not None:
@@ -321,22 +344,23 @@ def main() -> None:
                          ("raw_acc", raw_acc), ("lr", lr_now)):
             history[key].append(val)
 
+        # 分别维护 raw / EMA 各自的最优
+        raw_improved = raw_acc > best_raw_acc
+        if raw_improved:
+            best_raw_acc, best_raw_epoch = raw_acc, epoch
+            torch.save(_ckpt_dict(args, model.state_dict(), epoch, raw_acc, "raw", False),
+                       raw_ckpt_path)
+        ema_improved = ema is not None and ema_acc > best_ema_acc
+        if ema_improved:
+            best_ema_acc, best_ema_epoch = ema_acc, epoch
+            torch.save(_ckpt_dict(args, eval_model.state_dict(), epoch, ema_acc, "ema", True),
+                       ema_ckpt_path)
+
         improved = cur_acc > best_acc
         if improved:
             best_acc, best_epoch, best_source = cur_acc, epoch, cur_src
-            torch.save({
-                "model": args.model,
-                "width": args.width,
-                "drop_path": args.drop_path,
-                "dropout": args.dropout,
-                "state_dict": cur_state,
-                "epoch": epoch,
-                "best_acc": best_acc,
-                "best_acc_source": cur_src,
-                "recipe": args.recipe,
-                "ema": ema is not None,
-                "args": vars(args),
-            }, ckpt_path)
+            torch.save(_ckpt_dict(args, cur_state, epoch, cur_acc, cur_src, ema is not None),
+                       ckpt_path)
 
         logger.log({
             "epoch": epoch, "lr": f"{lr_now:.6f}",
@@ -344,6 +368,7 @@ def main() -> None:
             "test_loss": f"{test_loss:.4f}", "test_acc": f"{test_acc:.2f}",
             "raw_acc": f"{raw_acc:.2f}", "mixed_ratio": f"{mixed_ratio:.3f}",
             "epoch_time": f"{dt:.1f}", "best_acc": f"{best_acc:.2f}",
+            "best_raw_acc": f"{best_raw_acc:.2f}", "best_ema_acc": f"{best_ema_acc:.2f}",
         })
 
         flag = "  *" if improved else ""
@@ -352,7 +377,9 @@ def main() -> None:
         print(f"Epoch {epoch:3d}/{args.epochs} | lr {lr_now:.4f} | "
               f"train loss {train_loss:.4f} acc {train_acc:5.2f}% | "
               f"test loss {test_loss:.4f} acc {test_acc:5.2f}%{src_note} | "
-              f"{dt:5.1f}s | best {best_acc:5.2f}% ({best_source}){flag}")
+              f"{dt:5.1f}s | best {best_acc:5.2f}% ({best_source})"
+              + (f" [raw {best_raw_acc:5.2f} / ema {best_ema_acc:5.2f}]" if ema is not None else "")
+              + flag)
 
     total_time = time.time() - total_start
     print("-" * 96)
@@ -360,6 +387,9 @@ def main() -> None:
           f"({total_time / max(1, args.epochs):.1f}s/epoch)")
     print(f"最佳测试准确率: {best_acc:.2f}% (epoch {best_epoch}, 来自 {best_source})"
           f"  ->  {ckpt_path}")
+    if ema is not None:
+        print(f"  其中 raw 最优 {best_raw_acc:.2f}% (epoch {best_raw_epoch})  ->  {raw_ckpt_path}")
+        print(f"       EMA 最优 {best_ema_acc:.2f}% (epoch {best_ema_epoch})  ->  {ema_ckpt_path}")
 
     plot_history(history, out_dir / f"curves{suffix}.png",
                  title=f"{args.model} on CIFAR-10 ({args.recipe})")
@@ -388,6 +418,10 @@ def main() -> None:
         "best_acc": round(best_acc, 4),
         "best_epoch": best_epoch,
         "best_acc_source": best_source,
+        "best_raw_acc": round(best_raw_acc, 4),
+        "best_raw_epoch": best_raw_epoch,
+        "best_ema_acc": round(best_ema_acc, 4),
+        "best_ema_epoch": best_ema_epoch,
         "final_acc": round(history["test_acc"][-1], 4),
         "total_minutes": round(total_time / 60, 2),
         "history": history,
