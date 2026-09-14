@@ -27,9 +27,14 @@
 
 ![五次实验对比](results/curves_compare.png)
 
-> **关于权重文件**：仓库内的 `checkpoints/best.pt` 是 ResNet-18 strong 200 轮
-> （42.7 MB）。WRN-28-10 的权重是 **139.3 MB，超过 GitHub 单文件 100 MB 上限**，
-> 因此未纳入仓库，需要时用上面第 3 节的命令自行训练得到（约 4.3 小时）。
+> **关于权重文件**
+>
+> - `checkpoints/best.pt`（42.7 MB，ResNet-18 strong 200 轮）随仓库提供。
+> - WRN-28-10 的权重是 **139.3 MB，超过 GitHub 单文件 100 MB 上限**，因此作为
+>   Release 附件发布：
+>   **[下载 best_wrn28_10.pt](https://github.com/liyi3068238601-oss/cifar10-resnet/releases/download/v1.0-wrn28-10-97.50/best_wrn28_10.pt)**
+>   （[Release 页面](https://github.com/liyi3068238601-oss/cifar10-resnet/releases/tag/v1.0-wrn28-10-97.50)）
+> - 也可以自行训练得到，命令见上面第 3 节（约 4.3 小时）。
 
 WRN-28-10 的混淆矩阵与预测示例：
 
